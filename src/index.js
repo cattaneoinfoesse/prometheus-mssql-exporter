@@ -101,7 +101,7 @@ app.get("/metrics", async (req, res) => {
       tasks.push(collect(connection, entries).finally(async () =>  await connection.close()))
     } catch (error) {
       // error connecting
-      appLog("Error handling /metrics request");
+      appLog(`Error handling /metrics request for server '${connectionString.server}'`, error);
       const mssqlUp = entries.mssql_up.metrics.mssql_up;
       mssqlUp.set({ host: connectionString.server }, 0);
     }

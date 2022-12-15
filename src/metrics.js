@@ -524,10 +524,18 @@ function getMetrics() {
         name: "mssql_volume_available_bytes",
         help: "Available free space on the volume",
         labelNames: ["host", "volume_mount_point"]
+      }),
+      mssql_volume_available_percentage: new client.Gauge({
+        name: "mssql_volume_available_percentage",
+        help: "Available free space on the volume ( % )",
+        labelNames: ["host", "volume_mount_point"]
       })
     },
     query: `
-        SELECT distinct(volume_mount_point), total_bytes, avg(available_bytes) as available_bytes
+        SELECT distinct(volume_mount_point),
+                       total_bytes,
+                       avg(available_bytes),
+                       cast(avg(available_bytes) as decimal) / cast(total_bytes as decimal) * 100
         FROM sys.master_files AS f
                  CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.file_id)
         GROUP by volume_mount_point, total_bytes
@@ -538,6 +546,7 @@ function getMetrics() {
         const volume_mount_point = row[0];
         const total_bytes = +row[1];
         const available_bytes = +row[2];
+        const available_percentage = +row[3];
         metricsLog("Fetch volume stats for volume_mount_point ", volume_mount_point);
         metrics.mssql_volume_total_bytes.set(
           { host, volume_mount_point },
@@ -546,6 +555,10 @@ function getMetrics() {
         metrics.mssql_volume_available_bytes.set(
           { host, volume_mount_point },
           available_bytes
+        );
+        metrics.mssql_volume_available_percentage.set(
+          { host, volume_mount_point },
+          available_percentage
         );
       }
     }
