@@ -28,6 +28,9 @@ Prometheus exporter for Microsoft SQL Server (MSSQL). Exposes the following metr
 - mssql_available_physical_memory_kb Available physical memory in KB
 - mssql_total_page_file_kb Total page file in KB
 - mssql_available_page_file_kb Available page file in KB
+- mssql_db_memory RAM used by every database
+- mssql_volume_available_bytes Available free space on the volume
+- mssql_volume_total_bytes Total size in bytes of the volume
 
 Please feel free to submit other interesting metrics to include.
 
@@ -35,16 +38,11 @@ Please feel free to submit other interesting metrics to include.
 
 ## Usage
 
-`docker run -e SERVER=192.168.56.101 -e USERNAME=SA -e PASSWORD=qkD4x3yy -e DEBUG=app -p 4000:4000 --name prometheus-mssql-exporter awaragi/prometheus-mssql-exporter`
+`docker run -e CONNECTION_STRINGS='Server=localhost;Database=master;User id=sa;Password=qkD4x3yy;Trusted_Connection=True;TrustServerCertificate=True|Server=127.0.0.1;Database=master;User id=sa;Password=qkD4x3yy;Trusted_Connection=True;TrustServerCertificate=True' -e DEBUG=app -p 4000:4000 --name prometheus-mssql-exporter awaragi/prometheus-mssql-exporter`
 
 The image supports the following environments and exposes port 4000
 
-- **SERVER** server ip or dns name (required)
-- **PORT** server port (optional defaults to 1433)
-- **USERNAME** access user (required)
-- **PASSWORD** access password (required)
-- **ENCRYPT** force [encrypt](https://docs.microsoft.com/en-us/dotnet/api/system.data.sqlclient.sqlconnectionstringbuilder.encrypt?view=dotnet-plat-ext-6.0) setting (optional defaults to true)
-- **TRUST_SERVER_CERTIFICATE** sets [trustServerCertificate](https://docs.microsoft.com/en-us/dotnet/api/system.data.sqlclient.sqlconnectionstringbuilder.trustservercertificate?view=dotnet-plat-ext-6.0) setting (optional defaults to true)
+- **CONNECTION_STRINGS** List of connection string ( separated with `|` char ) (required)
 - **DEBUG** comma delimited list of enabled logs (optional currently supports app and metrics)
 
 It is **_required_** that the specified user has the following permissions
@@ -100,12 +98,7 @@ npm run metrics
 
 ## Environment variables
 
-- SERVER: sqlserver
-- PORT: sql server port (optional defaults to 1433)
-- USERNAME: sql server user (should have admin or user with required permissions)
-- PASSWORD: sql user password
-- ENCRYPT: force [encrypt](https://docs.microsoft.com/en-us/dotnet/api/system.data.sqlclient.sqlconnectionstringbuilder.encrypt?view=dotnet-plat-ext-6.0) setting (optional defaults to true)
-- TRUST_SERVER_CERTIFICATE: sets [trustServerCertificate](https://docs.microsoft.com/en-us/dotnet/api/system.data.sqlclient.sqlconnectionstringbuilder.trustservercertificate?view=dotnet-plat-ext-6.0) setting (optional defaults to true)
+- CONNECTION_STRINGS: List of connection string ( separated with `|` char ) (required)
 - EXPOSE: webserver port (defaults to 4000)
 - DEBUG: verbose logging
   - app for application logging
