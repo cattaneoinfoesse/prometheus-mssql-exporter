@@ -77,9 +77,11 @@ async function measure(connection, collector, name) {
  * @returns Promise of execution (no value returned)
  */
 async function collect(connection, entries) {
+  const tasks = []
   for (const [metricName, metric] of Object.entries(entries)) {
-    await measure(connection, metric, metricName);
+    tasks.push(measure(connection, metric, metricName));
   }
+  await Promise.all(tasks);
 }
 
 app.get("/", (req, res) => {
@@ -91,22 +93,20 @@ const entries = getMetrics();
 
 app.get("/metrics", async (req, res) => {
   res.contentType(client.register.contentType);
-
+  appLog("Received /metrics request");
+  const tasks = []
   for (const connectionString of config.connectStrings) {
     try {
-      appLog("Received /metrics request");
       let connection = await connect(connectionString);
-      await collect(connection, entries);
-      await connection.close();
+      tasks.push(collect(connection, entries).finally(async () =>  await connection.close()))
     } catch (error) {
       // error connecting
       appLog("Error handling /metrics request");
       const mssqlUp = entries.mssql_up.metrics.mssql_up;
       mssqlUp.set({ host: connectionString.server }, 0);
-      //res.header("X-Error", error.message || error);
-      //res.send(client.register.getSingleMetricAsString(mssqlUp.name));
     }
   }
+  await Promise.all(tasks);
   appLog("Successfully processed /metrics request");
   res.send(client.register.metrics());
 });
