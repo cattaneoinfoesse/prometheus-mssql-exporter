@@ -52,7 +52,7 @@ async function measure(connection, collector, name) {
     await connection.request().query(collector.query).then(result => {
       if (result.recordset.length > 0) {
         try {
-          collector.collect(result.recordset, collector.metrics);
+          collector.collect(result.recordset, collector.metrics, connection.config.server);
         } catch (error) {
           console.error(`Error processing metric ${name} data`, collector.query, JSON.stringify(result.recordset), error);
         }
@@ -86,16 +86,13 @@ app.get("/", (req, res) => {
   res.redirect("/metrics");
 });
 
-const metrics = {};
-for (const connectionString of config.connectStrings) {
-  metrics[connectionString.server] = getMetrics(connectionString.server);
-}
+const entries = getMetrics();
+
 
 app.get("/metrics", async (req, res) => {
   res.contentType(client.register.contentType);
 
   for (const connectionString of config.connectStrings) {
-    const entries = metrics[connectionString.server];
     try {
       appLog("Received /metrics request");
       let connection = await connect(connectionString);
