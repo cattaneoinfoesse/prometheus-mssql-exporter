@@ -2,112 +2,69 @@ const appLog = require("debug")("app");
 const dbLog = require("debug")("db");
 const queriesLog = require("debug")("queries");
 
-const Connection = require("tedious").Connection;
-const Request = require("tedious").Request;
+const sql = require("mssql");
 const app = require("express")();
 const client = require("prom-client");
 
-const { entries } = require("./metrics");
+const { getMetrics } = require("./metrics");
+
+if (!process.env["CONNECTION_STRINGS"]) {
+  throw new Error("Missing CONNECTION_STRINGS information");
+}
 
 let config = {
-  connect: {
-    server: process.env["SERVER"],
-    authentication: {
-      type: "default",
-      options: {
-        userName: process.env["USERNAME"],
-        password: process.env["PASSWORD"],
-      },
-    },
-    options: {
-      port: parseInt(process.env["PORT"]) || 1433,
-      encrypt: process.env["ENCRYPT"] !== undefined ? process.env["ENCRYPT"] === "true" : true,
-      trustServerCertificate: process.env["TRUST_SERVER_CERTIFICATE"] !== undefined ? process.env["TRUST_SERVER_CERTIFICATE"] === "true" : true,
-      rowCollectionOnRequestCompletion: true,
-    },
-  },
-  port: parseInt(process.env["EXPOSE"]) || 4000,
+  connectStrings: process.env["CONNECTION_STRINGS"].split("|").map(connectString => {
+    const config = sql.ConnectionPool.parseConnectionString(connectString);
+    config.arrayRowMode = true;
+    config.options.arrayRowMode = true;
+    config.options.rowCollectionOnRequestCompletion = true;
+    return config;
+  }),
+  port: parseInt(process.env["EXPOSE"]) || 4000
 };
-
-if (!config.connect.server) {
-  throw new Error("Missing SERVER information");
-}
-if (!config.connect.authentication.options.userName) {
-  throw new Error("Missing USERNAME information");
-}
-if (!config.connect.authentication.options.password) {
-  throw new Error("Missing PASSWORD information");
-}
 
 /**
  * Connects to a database server.
  *
- * @returns Promise<Connection>
+ * @param connectionConfig {Object} connection config
+ *
+ * @returns Promise<sql.ConnectionPool>
  */
-async function connect() {
-  return new Promise((resolve, reject) => {
-    dbLog(
-      "Connecting to",
-      config.connect.authentication.options.userName + "@" + config.connect.server + ":" + config.connect.options.port,
-      "encrypt:",
-      config.connect.options.encrypt,
-      "trustServerCertificate:",
-      config.connect.options.trustServerCertificate
-    );
-
-    let connection = new Connection(config.connect);
-    connection.on("connect", (error) => {
-      if (error) {
-        console.error("Failed to connect to database:", error.message || error);
-        reject(error);
-      } else {
-        dbLog("Connected to database");
-        resolve(connection);
-      }
-    });
-    connection.on("error", (error) => {
-      console.error("Error while connected to database:", error.message || error);
-      reject(error);
-    });
-    connection.on("end", () => {
-      dbLog("Connection to database ended");
-    });
-    connection.connect();
-  });
+async function connect(connectionConfig) {
+  dbLog("Connecting");
+  const pool = new sql.ConnectionPool(connectionConfig);
+  await pool.connect();
+  return pool;
 }
 
 /**
  * Recursive function that executes all collectors sequentially
  *
- * @param connection database connection
- * @param collector single metric: {query: string, collect: function(rows, metric)}
- * @param name name of collector variable
+ * @param connection {sql.ConnectionPool} database connection
+ * @param collector {Object} single metric: {query: string, collect: function(rows, metric)}
+ * @param name {string} name of collector variable
  *
  * @returns Promise of collect operation (no value returned)
  */
 async function measure(connection, collector, name) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     queriesLog(`Executing metric ${name} query: ${collector.query}`);
-    let request = new Request(collector.query, (error, rowCount, rows) => {
-      if (!error) {
-        queriesLog(`Retrieved metric ${name} rows (${rows.length}): ${JSON.stringify(rows, null, 2)}`);
-
-        if (rows.length > 0) {
-          try {
-            collector.collect(rows, collector.metrics);
-          } catch (error) {
-            console.error(`Error processing metric ${name} data`, collector.query, JSON.stringify(rows), error);
-          }
-        } else {
-          console.error(`Query for metric ${name} returned 0 rows to process`, collector.query);
+    await connection.request().query(collector.query).then(result => {
+      if (result.recordset.length > 0) {
+        try {
+          collector.collect(result.recordset, collector.metrics);
+        } catch (error) {
+          console.error(`Error processing metric ${name} data`, collector.query, JSON.stringify(result.recordset), error);
         }
         resolve();
       } else {
         console.error(`Error executing metric ${name} SQL query`, collector.query, error);
         resolve();
       }
+    }).catch(error => {
+      console.error(`Error executing metric ${name} SQL query`, collector.query, error);
+      resolve();
     });
-    connection.execSql(request);
   });
 }
 
@@ -115,10 +72,11 @@ async function measure(connection, collector, name) {
  * Function that collects from an active server.
  *
  * @param connection database connection
+ * @param entries array of metrics
  *
  * @returns Promise of execution (no value returned)
  */
-async function collect(connection) {
+async function collect(connection, entries) {
   for (const [metricName, metric] of Object.entries(entries)) {
     await measure(connection, metric, metricName);
   }
@@ -128,33 +86,41 @@ app.get("/", (req, res) => {
   res.redirect("/metrics");
 });
 
+const metrics = {};
+for (const connectionString of config.connectStrings) {
+  metrics[connectionString.server] = getMetrics(connectionString.server);
+}
+
 app.get("/metrics", async (req, res) => {
   res.contentType(client.register.contentType);
 
-  try {
-    appLog("Received /metrics request");
-    let connection = await connect();
-    await collect(connection);
-    connection.close();
-    res.send(client.register.metrics());
-    appLog("Successfully processed /metrics request");
-  } catch (error) {
-    // error connecting
-    appLog("Error handling /metrics request");
-    const mssqlUp = entries.mssql_up.metrics.mssql_up;
-    mssqlUp.set(0);
-    res.header("X-Error", error.message || error);
-    res.send(client.register.getSingleMetricAsString(mssqlUp.name));
+  for (const connectionString of config.connectStrings) {
+    const entries = metrics[connectionString.server];
+    try {
+      appLog("Received /metrics request");
+      let connection = await connect(connectionString);
+      await collect(connection, entries);
+      await connection.close();
+    } catch (error) {
+      // error connecting
+      appLog("Error handling /metrics request");
+      const mssqlUp = entries.mssql_up.metrics.mssql_up;
+      mssqlUp.set({ host: connectionString.server }, 0);
+      //res.header("X-Error", error.message || error);
+      //res.send(client.register.getSingleMetricAsString(mssqlUp.name));
+    }
   }
+  appLog("Successfully processed /metrics request");
+  res.send(client.register.metrics());
 });
 
-const server = app.listen(config.port, function () {
+const server = app.listen(config.port, function() {
   appLog(
-    `Prometheus-MSSQL Exporter listening on local port ${config.port} monitoring ${config.connect.authentication.options.userName}@${config.connect.server}:${config.connect.options.port}`
+    `Prometheus-MSSQL Exporter listening`
   );
 });
 
-process.on("SIGINT", function () {
+process.on("SIGINT", function() {
   server.close();
   process.exit(0);
 });
