@@ -58,7 +58,7 @@ async function measure(connection, collector, name) {
         }
         resolve();
       } else {
-        console.error(`Error executing metric ${name} SQL query`, collector.query, error);
+        console.error(`Error executing metric ${name} SQL query`, collector.query);
         resolve();
       }
     }).catch(error => {

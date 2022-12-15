@@ -39,7 +39,7 @@ describe("E2E Test", function () {
     });
 
     // bulk ensure that all expected results of a vanilla mssql server instance are here
-    expect(Object.keys(lines)).toEqual([
+    expect(Object.keys(lines).sort()).toEqual([
       `mssql_up{host="${host}"}`,
       `mssql_product_version{host="${host}"}`,
       `mssql_instance_local_time{host="${host}"}`,
@@ -98,6 +98,8 @@ describe("E2E Test", function () {
       `mssql_db_memory{host="${host}",database="master"}`,
       `mssql_db_memory{host="${host}",database="tempdb"}`,
       `mssql_db_memory{host="${host}",database="model"}`,
-    ]);
+      `mssql_volume_total_bytes{host="${host}",volume_mount_point="null"}`,
+      `mssql_volume_available_bytes{host="${host}",volume_mount_point="null"}`,
+    ].sort());
   });
 });

@@ -535,10 +535,10 @@ function getMetrics() {
     collect: (rows, metrics, host) => {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
-        const volume_mount_point = row[0].value;
-        const total_bytes = +row[1].value;
-        const available_bytes = +row[2].value;
-        debug("Fetch volume stats for volume_mount_point ", volume_mount_point);
+        const volume_mount_point = row[0];
+        const total_bytes = +row[1];
+        const available_bytes = +row[2];
+        metricsLog("Fetch volume stats for volume_mount_point ", volume_mount_point);
         metrics.mssql_volume_total_bytes.set(
           { host, volume_mount_point },
           total_bytes
