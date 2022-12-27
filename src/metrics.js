@@ -340,14 +340,18 @@ function getMetrics() {
       })
     },
     query: `SELECT cast(DB_Name(a.database_id) as varchar) as name,
-                   max(io_stall_read_ms),
-                   max(io_stall_write_ms),
-                   max(io_stall),
-                   max(io_stall_queued_read_ms),
-                   max(io_stall_queued_write_ms)
+                   sum(io_stall_read_ms) as io_stall_read_ms,
+                   sum(io_stall_write_ms) as io_stall_write_ms,
+                   sum(io_stall) as io_stall,
+                   sum(io_stall_queued_read_ms) as io_stall_queued_read_ms,
+                   sum(io_stall_queued_write_ms) as io_stall_queued_write_ms,
+                   sum(io_stall_read_ms) / sum(num_of_reads) as io_stall_read_ms_avg,
+                   sum(io_stall_write_ms) / sum(num_of_writes) as io_stall_write_ms_avg
             FROM sys.dm_io_virtual_file_stats(null, null) a
-                     INNER JOIN sys.master_files b ON a.database_id = b.database_id and a.file_id = b.file_id
-            GROUP BY a.database_id`,
+                     INNER JOIN sys.master_files b ON a.database_id = b.database_id AND a.file_id = b.file_id
+            WHERE b.[type] = 0 /* only rows file */
+            GROUP BY a.database_id
+    `,
     collect: (rows, metrics, host) => {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
@@ -357,12 +361,16 @@ function getMetrics() {
         const stall = row[3];
         const queued_read = row[4];
         const queued_write = row[5];
-        metricsLog("Fetched number of stalls for database", database, "host", host, "read", read, "write", write, "queued_read", queued_read, "queued_write", queued_write);
+        const avg_read = row[6];
+        const avg_write = row[7];
+        metricsLog("Fetched number of stalls for database", database, "host", host, "read", read, "write", write, "queued_read", queued_read, "queued_write", queued_write, "avg_read", avg_read, "avg_write", avg_write);
         metrics.mssql_io_stall_total.set({ host, database }, stall);
         metrics.mssql_io_stall.set({ host, database, type: "read" }, read);
         metrics.mssql_io_stall.set({ host, database, type: "write" }, write);
         metrics.mssql_io_stall.set({ host, database, type: "queued_read" }, queued_read);
         metrics.mssql_io_stall.set({ host, database, type: "queued_write" }, queued_write);
+        metrics.mssql_io_stall.set({ host, database, type: "avg_read" }, avg_read);
+        metrics.mssql_io_stall.set({ host, database, type: "avg_write" }, avg_write);
       }
     }
   };
@@ -564,6 +572,133 @@ function getMetrics() {
     }
   };
 
+  const mssql_most_exec_query = {
+    metrics: {
+      mssql_total_execution_count: new client.Gauge({name: 'mssql_total_execution_count', help: 'Total Execution Count', labelNames: ["database", "query_id", "query_text_id", "query_sql_text"]}),
+    },
+    query: `
+        SELECT TOP 100 q.query_id, qt.query_text_id, qt.query_sql_text, SUM(rs.count_executions) AS total_execution_count
+        FROM sys.query_store_query_text AS qt
+                 JOIN sys.query_store_query AS q
+                      ON qt.query_text_id = q.query_text_id
+                 JOIN sys.query_store_plan AS p
+                      ON q.query_id = p.query_id
+                 JOIN sys.query_store_runtime_stats AS rs
+                      ON p.plan_id = rs.plan_id
+        WHERE rs.avg_duration > 1000000
+        GROUP BY q.query_id, qt.query_text_id, qt.query_sql_text
+        ORDER BY total_execution_count DESC
+    `,
+    collect: function (rows, metrics, config, host) {
+      let dbname = config.connect.options.database;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const mssql_query_id = row[0];
+        const mssql_query_text_id = row[1];
+        const mssql_query_sql_text = row[2];
+        const mssql_total_execution_count = row[3];
+        metricsLog("Most Executed Queries -", dbname);
+        metrics.mssql_total_execution_count.set({host, database: dbname, query_id: mssql_query_id, query_text_id: mssql_query_text_id, query_sql_text: mssql_query_sql_text},mssql_total_execution_count);
+      }
+    }
+
+  };
+
+  const mssql_most_avg_time_query = {
+    metrics: {
+      mssql_avg_duration: new client.Gauge({name: 'mssql_avg_duration_us', help: 'Average Query Duration in micro seconds', labelNames: ["database", "query_sql_text", "query_id"]}),
+    },
+    query: `SELECT TOP 100 avg(rs.avg_duration) AS avg_duration, max(qt.query_sql_text) AS query_sql_text, q.query_id, GETUTCDATE() AS CurrentUTCTime, max(rs.last_execution_time) AS last_execution_time
+FROM sys.query_store_query_text AS qt       
+JOIN sys.query_store_query AS q          
+    ON qt.query_text_id = q.query_text_id              
+JOIN sys.query_store_plan AS p           
+    ON q.query_id = p.query_id        
+JOIN sys.query_store_runtime_stats AS rs          
+    ON p.plan_id = rs.plan_id              
+WHERE rs.last_execution_time > DATEADD(hour, -1, GETUTCDATE()) and rs.avg_duration > 1000000
+GROUP BY q.query_id      
+ORDER BY avg(rs.avg_duration) DESC`,
+    collect: function (rows, metrics, config, host) {
+      let dbname = config.connect.options.database;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const mssql_avg_duration = row[0];
+        const mssql_query_sql_text = row[1];
+        const mssql_query_id = row[2];
+        metricsLog("Most Average Time Query -", dbname);
+        metrics.mssql_avg_duration.set({host, database: dbname, query_sql_text: mssql_query_sql_text, query_id: mssql_query_id},mssql_avg_duration);
+      }
+    }
+  };
+
+  const mssql_most_avg_io_query = {
+    metrics: {
+      mssql_avg_physical_io_reads: new client.Gauge({name: 'mssql_avg_physical_io_reads', help: 'Average Physical IO Reads', labelNames: ["database", "query_sql_text", "query_id"]}),
+      mssql_avg_rowcount : new client.Gauge({name: 'mssql_avg_rowcount', help: 'Average Row Count', labelNames: ["database", "query_sql_text", "query_id"]}),
+      mssql_count_executions : new client.Gauge({name: 'mssql_count_executions', help: 'Cont Executions', labelNames: ["database", "query_sql_text", "query_id"]}),
+    },
+    query: `SELECT TOP 10 avg(rs.avg_physical_io_reads) as avg_physical_io_reads, max(qt.query_sql_text) as query_sql_text, q.query_id, avg(rs.avg_rowcount) as avg_rowcount, sum(rs.count_executions) as count_executions
+FROM sys.query_store_query_text AS qt
+JOIN sys.query_store_query AS q
+    ON qt.query_text_id = q.query_text_id
+JOIN sys.query_store_plan AS p
+    ON q.query_id = p.query_id
+JOIN sys.query_store_runtime_stats AS rs
+    ON p.plan_id = rs.plan_id
+JOIN sys.query_store_runtime_stats_interval AS rsi 
+    ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
+WHERE rsi.start_time >= DATEADD(hour, -1, GETUTCDATE()) and rs.avg_duration > 1000000
+GROUP BY q.query_id
+ORDER BY avg(rs.avg_physical_io_reads) DESC`,
+    collect: function (rows, metrics, config, host) {
+      let dbname = config.connect.options.database;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const mssql_avg_physical_io_reads = row[0];
+        const mssql_query_sql_text = row[1];
+        const mssql_query_id = row[2];
+        const mssql_avg_rowcount = row[3];
+        const mssql_count_executions = row[4];
+        metricsLog("Most Average IO Query -", dbname);
+        metrics.mssql_avg_physical_io_reads.set({host, database: dbname, query_sql_text: mssql_query_sql_text, query_id: mssql_query_id},mssql_avg_physical_io_reads);
+        metrics.mssql_avg_rowcount.set({host, database: dbname, query_sql_text: mssql_query_sql_text, query_id: mssql_query_id},mssql_avg_rowcount);
+        metrics.mssql_count_executions.set({host, database: dbname, query_sql_text: mssql_query_sql_text, query_id: mssql_query_id},mssql_count_executions);
+      }
+    }
+  };
+
+  const mssql_most_wait_query = {
+    metrics: {
+      mssql_sum_total_wait_ms: new client.Gauge({name: 'mssql_sum_total_wait_ms', help: 'Total Wait ms', labelNames: ["database", "query_sql_text", "query_text_id", "query_id"]}),
+    },
+    query: `SELECT qt.query_sql_text, qt.query_text_id, st.sum_total_wait_ms,  q.query_id
+FROM sys.query_store_query q
+JOIN sys.query_store_query_text qt ON q.query_text_id = qt.query_text_id
+JOIN (
+ SELECT TOP 50  p.query_id, sum(total_query_wait_time_ms) AS sum_total_wait_ms 
+ FROM sys.query_store_wait_stats ws 
+ JOIN sys.query_store_plan p ON ws.plan_id = p.plan_id 
+ JOIN sys.query_store_query q ON p.query_id = q.query_id 
+ JOIN sys.query_store_query_text qt ON q.query_text_id = qt.query_text_id 
+ JOIN sys.query_store_runtime_stats AS rs ON p.plan_id = rs.plan_id 
+ WHERE rs.avg_duration > 1000000 
+ GROUP BY p.query_id 
+ ORDER BY sum_total_wait_ms DESC) as st ON st.query_id = q.query_id`,
+    collect: function (rows, metrics, config, host) {
+      let dbname = config.connect.options.database;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const mssql_query_sql_text = row[0];
+        const mssql_query_text_id = row[1];
+        const mssql_sum_total_wait_ms = row[2];
+        const mssql_query_id = row[3];
+        metricsLog("Most Wait Query -", dbname);
+        metrics.mssql_sum_total_wait_ms.set({host, database: dbname, query_sql_text: mssql_query_sql_text, query_text_id: mssql_query_text_id, query_id: mssql_query_id},mssql_sum_total_wait_ms);
+      }
+    }
+  };
+
   return {
     mssql_up,
     mssql_product_version,
@@ -583,7 +718,10 @@ function getMetrics() {
     mssql_os_process_memory,
     mssql_os_sys_memory,
     mssql_db_memory,
-    mssql_volume_stats
+    mssql_volume_stats,
+    mssql_most_exec_query,
+    mssql_most_avg_io_query,
+    mssql_most_avg_time_query
   };
 }
 
