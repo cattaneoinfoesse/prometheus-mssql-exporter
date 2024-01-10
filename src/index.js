@@ -14,8 +14,10 @@ if (!process.env["CONNECTION_STRINGS"]) {
 
 let config = {
   connectStrings: process.env["CONNECTION_STRINGS"].split("|").map(connectString => {
+    appLog(`Parsing connection string: ${connectString}`);
     const config = sql.ConnectionPool.parseConnectionString(connectString);
     config.arrayRowMode = true;
+    // config.trustServerCertificate = true;
     config.options.arrayRowMode = true;
     config.options.rowCollectionOnRequestCompletion = true;
     return config;
@@ -48,21 +50,21 @@ async function connect(connectionConfig) {
  */
 async function measure(connection, collector, name) {
   return new Promise(async (resolve) => {
-    queriesLog(`Executing metric ${name} query: ${collector.query}`);
+    queriesLog(`Executing metric '${name}' query: ${collector.query}`);
     await connection.request().query(collector.query).then(result => {
       if (result.recordset.length > 0) {
         try {
           collector.collect(result.recordset, collector.metrics, connection.config.server);
         } catch (error) {
-          console.error(`Error processing metric ${name} data`, collector.query, JSON.stringify(result.recordset), error);
+          console.error(`Error processing metric '${name}' data`, collector.query, JSON.stringify(result.recordset), error);
         }
         resolve();
       } else {
-        console.error(`Error executing metric ${name} SQL query`, collector.query);
+        console.error(`No results executing metric '${name}' SQL query`, collector.query);
         resolve();
       }
     }).catch(error => {
-      console.error(`Error executing metric ${name} SQL query`, collector.query, error);
+      console.error(`Error executing metric '${name}' SQL query`, collector.query, error);
       resolve();
     });
   });
